@@ -167,6 +167,17 @@ RUN ./configure \
 RUN make -j $(nproc)
 RUN make install
 
+############## librespot build stage ##############
+FROM alpine AS builder-librespot
+RUN apk -U add \
+        git \
+        cargo \
+        portaudio-dev \
+        protobuf-dev
+RUN git clone https://github.com/billsq/librespot.git
+WORKDIR librespot
+RUN cargo build --release
+
 ############## runtime stage ##############
 FROM ghcr.io/linuxserver/baseimage-alpine:3.12
 
@@ -219,12 +230,15 @@ COPY --from=builder-sps /etc/shairport-sync* /etc/
 COPY --from=builder-sps /etc/dbus-1/system.d/shairport-sync-dbus.conf /etc/dbus-1/system.d/
 COPY --from=builder-sps /etc/dbus-1/system.d/shairport-sync-mpris.conf /etc/dbus-1/system.d/
 COPY --from=builder-sps /usr/local/bin/shairport-sync /usr/local/bin/shairport-sync
+COPY --from=builder-librespot /librespot/target/release/librespot /usr/local/bin/librespot
 COPY root/ /
 
-RUN mkdir /pipe
-RUN mkfifo /pipe/shairport-sync
-RUN mkfifo /pipe/shairport-sync.metadata
-RUN chmod 777 /pipe/shairport-sync*
+RUN mkdir /pipe && \
+ mkfifo /pipe/shairport-sync && \
+ mkfifo /pipe/shairport-sync.metadata && \
+ mkfifo /pipe/librespot && \
+ mkfifo /pipe/librespot.metadata && \
+ chmod 777 /pipe/*
 
 # Add the abc user to the pre-existing audio group, which has ID 29, for access to the ALSA stuff
 RUN addgroup -g 29 docker_audio && addgroup abc docker_audio

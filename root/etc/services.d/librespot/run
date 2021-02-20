@@ -1,0 +1,4 @@
+#!/usr/bin/with-contenv bash
+
+exec \
+	s6-setuidgid abc /usr/local/bin/librespot -n "Music Share" -b 320 --backend pipe --device /pipe/librespot --mixer-linear-volume true --volume-ctrl linear --mixer pipe --metadata-pipe /pipe/librespot.metadata
