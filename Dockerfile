@@ -2,8 +2,8 @@ FROM ghcr.io/linuxserver/baseimage-alpine:3.12 as buildstage
 ############## build stage ##############
 
 ARG DAAPD_RELEASE
-ARG LIBSPOTIFY_VERSION=12.1.51
-ARG ARCH=x86_64
+ENV LIBSPOTIFY_VERSION 12.1.51
+ENV ARCH x86_64
 
 RUN \
  echo "**** install build packages ****" && \
@@ -103,6 +103,70 @@ RUN \
  make && \
  make DESTDIR=/tmp/daapd-build install && \
  mv /tmp/daapd-build/etc/forked-daapd.conf /tmp/daapd-build/etc/forked-daapd.conf.orig
+
+############## shairport-sync build stage ##############
+FROM alpine AS shairport-sync-builder-base
+# General Build System:
+RUN apk -U add \
+        git \
+        build-base \
+        autoconf \
+        automake \
+        libtool \
+        dbus \
+        su-exec \
+        alsa-lib-dev \
+        libdaemon-dev \
+        popt-dev \
+        mbedtls-dev \
+        soxr-dev \
+        avahi-dev \
+        libconfig-dev \
+        libsndfile-dev \
+        mosquitto-dev \
+        xmltoman
+
+# ALAC Build System:
+FROM shairport-sync-builder-base AS builder-alac
+
+RUN git clone https://github.com/mikebrady/alac
+WORKDIR alac
+RUN autoreconf -fi
+RUN ./configure
+RUN make
+RUN make install
+
+# Shairport Sync Build System:
+FROM shairport-sync-builder-base AS builder-sps
+
+# This may be modified by the Github Action Workflow.
+ENV SHAIRPORT_SYNC_BRANCH 3.3.7
+
+COPY --from=builder-alac /usr/local/lib/libalac.* /usr/local/lib/
+COPY --from=builder-alac /usr/local/lib/pkgconfig/alac.pc /usr/local/lib/pkgconfig/alac.pc
+COPY --from=builder-alac /usr/local/include /usr/local/include
+
+RUN git clone https://github.com/mikebrady/shairport-sync
+WORKDIR shairport-sync
+RUN git checkout "$SHAIRPORT_SYNC_BRANCH"
+RUN autoreconf -fi
+RUN ./configure \
+              --with-alsa \
+              --with-dummy \
+              --with-pipe \
+              --with-stdout \
+              --with-avahi \
+              --with-ssl=mbedtls \
+              --with-soxr \
+              --sysconfdir=/etc \
+              --with-dbus-interface \
+              --with-mpris-interface \
+              --with-mqtt-client \
+              --with-apple-alac \
+              --with-convolution
+RUN make -j $(nproc)
+RUN make install
+
 ############## runtime stage ##############
 FROM ghcr.io/linuxserver/baseimage-alpine:3.12
 
@@ -130,7 +194,18 @@ RUN \
 	libwebsockets \
 	protobuf-c \
 	sqlite \
-	sqlite-libs && \
+	sqlite-libs \
+	alsa-lib \
+	popt \
+	glib \
+	mbedtls \
+	soxr \
+	libconfig \
+	libsndfile \
+	mosquitto-libs \
+	su-exec \
+	libgcc \
+	libgc++ && \
  apk add --no-cache \
 	--repository http://nl.alpinelinux.org/alpine/edge/community \
 	mxml
@@ -139,7 +214,20 @@ RUN \
 COPY --from=buildstage /tmp/daapd-build/ /
 COPY --from=buildstage /tmp/antlr3c-build/ /
 COPY --from=buildstage /tmp/libspotify-build/ /
+COPY --from=builder-alac /usr/local/lib/libalac.* /usr/local/lib/
+COPY --from=builder-sps /etc/shairport-sync* /etc/
+COPY --from=builder-sps /etc/dbus-1/system.d/shairport-sync-dbus.conf /etc/dbus-1/system.d/
+COPY --from=builder-sps /etc/dbus-1/system.d/shairport-sync-mpris.conf /etc/dbus-1/system.d/
+COPY --from=builder-sps /usr/local/bin/shairport-sync /usr/local/bin/shairport-sync
 COPY root/ /
+
+RUN mkdir /pipe
+RUN mkfifo /pipe/shairport-sync
+RUN mkfifo /pipe/shairport-sync.metadata
+RUN chmod 777 /pipe/shairport-sync*
+
+# Add the abc user to the pre-existing audio group, which has ID 29, for access to the ALSA stuff
+RUN addgroup -g 29 docker_audio && addgroup abc docker_audio
 
 # ports and volumes
 EXPOSE 3689
